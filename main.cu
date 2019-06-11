@@ -11,6 +11,9 @@
 #define MASK (4)
 #define THREAD_IN_BLOCK (16)
 
+#define MASK_GRAY (16)
+#define THREAD_IN_BLOCK_GRAY (512)
+
 #define gpuErrchk(ans) { gpuAssert((ans), __FILE__, __LINE__); }
 
 #define INPUT ("./img/img1.bmp")
@@ -50,15 +53,21 @@ __constant__ float gray_value[3] = {0.3, 0.58, 0.11};
 
 __global__ void cuda_gray(unsigned char *input, unsigned char* gray, int size) {
 	
-	int idx = blockIdx.x * blockDim.x + threadIdx.x;
+	int gray_idx = (blockIdx.x * blockDim.x + threadIdx.x) * MASK_GRAY;
+	int rgb_idx = gray_idx * 3;
 	
-	if (idx > size) {
-		return;
+	int c, rgb_index; 
+	
+	for(c =0; c<MASK_GRAY; ++c) {
+		if ((gray_idx+c) > size) {
+			return;
+		}
+		
+		rgb_index = rgb_idx+(c * 3);
+	
+		gray[gray_idx + c] = (gray_value[0] * input[rgb_index]) + (gray_value[1] * input[rgb_index + 1]) + (gray_value[2] * input[rgb_index + 2]);
+		
 	}
-	
-	int rgb_index = idx * 3;
-	
-	gray[idx] = (gray_value[0] * input[rgb_index]) + (gray_value[1] * input[rgb_index + 1]) + (gray_value[2] * input[rgb_index + 2]);
 }
 	  
 __global__ void cuda_sobel(unsigned char* d_gray, unsigned char* result, int height, int width) {
@@ -159,7 +168,7 @@ int main() {
 	gpuErrchk(cudaMalloc(&d_gray, img_width * img_height * sizeof(unsigned char)));
 	
 	//Launch kernel to transform image in gray scale
-	cuda_gray<<<(img_width * img_height) / (THREAD_IN_BLOCK * THREAD_IN_BLOCK), THREAD_IN_BLOCK * THREAD_IN_BLOCK>>>(d_image_data, d_gray, img_width * img_height);
+	cuda_gray<<<(img_width * img_height) / (THREAD_IN_BLOCK_GRAY * MASK_GRAY) + 1, THREAD_IN_BLOCK_GRAY>>>(d_image_data, d_gray, img_width * img_height);
 
 	//Device memory for sobel result
 	unsigned char* d_newColors;
@@ -167,20 +176,20 @@ int main() {
 	//Host memory for sobel result
 	unsigned char* newColors = (unsigned char*) malloc(img_width * img_height * sizeof(unsigned char));
 	
-	//Allocate device memory for result
-	gpuErrchk(cudaMalloc(&d_newColors, img_width * img_height * sizeof(unsigned char)));
-	
-	//Set Block size
-	dim3 block(THREAD_IN_BLOCK, THREAD_IN_BLOCK);
+	//Set block size
+	dim3 block(img_width/(THREAD_IN_BLOCK*MASK) +1 , img_height/(THREAD_IN_BLOCK*MASK) + 1);
 	
 	//Set grid size
-	dim3 grid(img_width/(THREAD_IN_BLOCK*MASK) +1 , img_height/(THREAD_IN_BLOCK*MASK) + 1);
+	dim3 grid(THREAD_IN_BLOCK, THREAD_IN_BLOCK);
+	
+	//Allocate device memory for result
+	gpuErrchk(cudaMalloc(&d_newColors, img_width * img_height * sizeof(unsigned char)));
 	
 	//Make sure that other kernel has finished
 	cudaDeviceSynchronize();
 	
 	//Launch kernel for sobel filter
-    cuda_sobel<<<grid, block>>>(d_gray, d_newColors, img_height, img_width);
+    cuda_sobel<<<block, grid>>>(d_gray, d_newColors, img_height, img_width);
 	
 	//Check for occurred error
 	gpuErrchk(cudaGetLastError());
@@ -216,5 +225,3 @@ int main() {
 	
 	return 0;
 }
-
-
