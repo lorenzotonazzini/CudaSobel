@@ -185,9 +185,6 @@ int main() {
 	//Allocate device memory for result
 	gpuErrchk(cudaMalloc(&d_newColors, img_width * img_height * sizeof(unsigned char)));
 	
-	//Make sure that other kernel has finished
-	cudaDeviceSynchronize();
-	
 	//Launch kernel for sobel filter
     cuda_sobel<<<block, grid>>>(d_gray, d_newColors, img_height, img_width);
 	
