@@ -140,6 +140,7 @@ int main() {
     fread(&bmp_head, sizeof(bmp_header), 1, img);
 
 	size = bmp_head.width * bmp_head.height;
+	
 	//pixel of image
 	unsigned char* image_data = (unsigned char*) malloc(size * 3);
 	
@@ -156,16 +157,18 @@ int main() {
 	fread(image_data, sizeof(unsigned char), size * 3, img);
 	
 	//Memory set for input data
-	gpuErrchk(cudaMalloc(&d_image_data, size * sizeof(unsigned char) * 3));
+	gpuErrchk(cudaMalloc(&d_image_data, size * 3));
 	
 	//Memory set for output data (gray image)
-	gpuErrchk(cudaMalloc(&d_gray, size * sizeof(unsigned char)));
+	gpuErrchk(cudaMalloc(&d_gray, size));
 	
 	int streamSize = ((size * 3) / NSTREAMS);
 	cudaStream_t streams[NSTREAMS];
 	
+	int offset;
+	
 	for (int i = 0; i < NSTREAMS; ++i) {
-	  int offset = i * streamSize;
+	  offset = i * streamSize;
 	  cudaStreamCreate(&streams[i]);
 	  cudaMemcpyAsync(&d_image_data[offset], &image_data[offset], streamSize, cudaMemcpyHostToDevice, streams[i]);
 	  cuda_gray<<<(streamSize/THREAD_IN_BLOCK_GRAY) + 1, THREAD_IN_BLOCK_GRAY, 0, streams[i]>>>(d_image_data, offset, streamSize, d_gray, size);
@@ -181,7 +184,7 @@ int main() {
 	dim3 grid(THREAD_IN_BLOCK, THREAD_IN_BLOCK);
 	
 	//Allocate device memory for result
-	gpuErrchk(cudaMalloc(&d_newColors, size * sizeof(unsigned char)));
+	gpuErrchk(cudaMalloc(&d_newColors, size));
 	
 	for (int c=0; c<NSTREAMS; ++c) {
 		cudaStreamSynchronize(streams[c]);
@@ -212,13 +215,14 @@ int main() {
 		cudaStreamDestroy(streams[c]);
 	}
 	
-	cudaFree(d_image_data);
-	cudaFree(d_gray);
+	fclose(output);
 	cudaFree(d_newColors);
+	cudaFree(d_gray);
+	cudaFree(d_image_data);
 	free(image_data);
 	
     fclose(img);
-    fclose(output);
+    
 	cudaDeviceReset();
 	
 	return 0;
