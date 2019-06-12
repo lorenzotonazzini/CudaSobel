@@ -11,12 +11,12 @@
 #define MASK (4)
 #define THREAD_IN_BLOCK (16)
 
-#define MASK_GRAY (16)
 #define THREAD_IN_BLOCK_GRAY (512)
+#define NSTREAMS (4)
 
 #define gpuErrchk(ans) { gpuAssert((ans), __FILE__, __LINE__); }
 
-#define INPUT ("./img/img1.bmp")
+#define INPUT ("./img/img.bmp")
 #define OUTPUT ("./out/output.bmp")
 
 typedef struct bmp_header{
@@ -51,23 +51,16 @@ __constant__ int sobel_y[3][3] =
 __constant__ float gray_value[3] = {0.3, 0.58, 0.11};
 
 
-__global__ void cuda_gray(unsigned char *input, unsigned char* gray, int size) {
+__global__ void cuda_gray(unsigned char *input, int offset, int streamSize, unsigned char* gray, int size) {
 	
-	int gray_idx = (blockIdx.x * blockDim.x + threadIdx.x) * MASK_GRAY;
-	int rgb_idx = gray_idx * 3;
+	int gray_idx = (offset/3) + (blockIdx.x * blockDim.x + threadIdx.x);
+	int rgb_idx = (offset) + ((blockIdx.x * blockDim.x + threadIdx.x) * 3); 
 	
-	int c, rgb_index; 
-	
-	for(c =0; c<MASK_GRAY; ++c) {
-		if ((gray_idx+c) > size) {
-			return;
-		}
-		
-		rgb_index = rgb_idx+(c * 3);
-	
-		gray[gray_idx + c] = (gray_value[0] * input[rgb_index]) + (gray_value[1] * input[rgb_index + 1]) + (gray_value[2] * input[rgb_index + 2]);
-		
+	if (((blockIdx.x * blockDim.x + threadIdx.x)*3)>=streamSize || gray_idx>=size) {
+		return;
 	}
+
+	gray[gray_idx] = (gray_value[0] * input[rgb_idx]) + (gray_value[1] * input[rgb_idx + 1]) + (gray_value[2] * input[rgb_idx + 2]);
 }
 	  
 __global__ void cuda_sobel(unsigned char* d_gray, unsigned char* result, int height, int width) {
@@ -131,10 +124,14 @@ int main() {
 	//Pixel to support operations
     unsigned char pixel[3];
 	
-    int x, y, img_width, img_height;
+	//Size of image
+    int size;
 	
 	//To show elapsed time
 	clock_t start;
+	
+	//To inizilize gpu
+	cudaFree(0);
 	
 	start = clock();
 	
@@ -142,11 +139,9 @@ int main() {
     bmp_header bmp_head;
     fread(&bmp_head, sizeof(bmp_header), 1, img);
 
-    img_width = bmp_head.width;
-    img_height = bmp_head.height;
-
+	size = bmp_head.width * bmp_head.height;
 	//pixel of image
-	unsigned char* image_data;
+	unsigned char* image_data = (unsigned char*) malloc(size * 3);
 	
 	// Input for device
 	unsigned char* d_image_data;
@@ -154,48 +149,52 @@ int main() {
 	// Output for device
 	unsigned char* d_gray;
 	
-	//Pinned Memory
-	cudaMallocHost((void**) &image_data, img_width * img_height * 3);
+	//Pinned memory
+	//gpuErrchk(cudaMallocHost(&image_data, size * sizeof(unsigned char) * 3));
 	
 	//Read image
-	fread(image_data, sizeof(unsigned char), img_width * img_height * 3, img);
+	fread(image_data, sizeof(unsigned char), size * 3, img);
 	
 	//Memory set for input data
-	gpuErrchk(cudaMalloc(&d_image_data, img_width * img_height * sizeof(unsigned char) * 3));
-	gpuErrchk(cudaMemcpy(d_image_data, image_data, img_width * img_height * sizeof(unsigned char) * 3, cudaMemcpyHostToDevice));
+	gpuErrchk(cudaMalloc(&d_image_data, size * sizeof(unsigned char) * 3));
 	
 	//Memory set for output data (gray image)
-	gpuErrchk(cudaMalloc(&d_gray, img_width * img_height * sizeof(unsigned char)));
+	gpuErrchk(cudaMalloc(&d_gray, size * sizeof(unsigned char)));
 	
-	//Launch kernel to transform image in gray scale
-	cuda_gray<<<(img_width * img_height) / (THREAD_IN_BLOCK_GRAY * MASK_GRAY) + 1, THREAD_IN_BLOCK_GRAY>>>(d_image_data, d_gray, img_width * img_height);
-
+	int streamSize = ((size * 3) / NSTREAMS);
+	cudaStream_t streams[NSTREAMS];
+	
+	for (int i = 0; i < NSTREAMS; ++i) {
+	  int offset = i * streamSize;
+	  cudaStreamCreate(&streams[i]);
+	  cudaMemcpyAsync(&d_image_data[offset], &image_data[offset], streamSize, cudaMemcpyHostToDevice, streams[i]);
+	  cuda_gray<<<(streamSize/THREAD_IN_BLOCK_GRAY) + 1, THREAD_IN_BLOCK_GRAY, 0, streams[i]>>>(d_image_data, offset, streamSize, d_gray, size);
+	}
+	
 	//Device memory for sobel result
 	unsigned char* d_newColors;
 	
-	//Host memory for sobel result
-	unsigned char* newColors = (unsigned char*) malloc(img_width * img_height * sizeof(unsigned char));
-	
 	//Set block size
-	dim3 block(img_width/(THREAD_IN_BLOCK*MASK) +1 , img_height/(THREAD_IN_BLOCK*MASK) + 1);
+	dim3 block(bmp_head.width/(THREAD_IN_BLOCK*MASK) +1 , bmp_head.height/(THREAD_IN_BLOCK*MASK) + 1);
 	
 	//Set grid size
 	dim3 grid(THREAD_IN_BLOCK, THREAD_IN_BLOCK);
 	
 	//Allocate device memory for result
-	gpuErrchk(cudaMalloc(&d_newColors, img_width * img_height * sizeof(unsigned char)));
+	gpuErrchk(cudaMalloc(&d_newColors, size * sizeof(unsigned char)));
+	
+	for (int c=0; c<NSTREAMS; ++c) {
+		cudaStreamSynchronize(streams[c]);
+	}
 	
 	//Launch kernel for sobel filter
-    cuda_sobel<<<block, grid>>>(d_gray, d_newColors, img_height, img_width);
+    cuda_sobel<<<block, grid>>>(d_gray, d_newColors, bmp_head.height, bmp_head.width);
 	
 	//Check for occurred error
 	gpuErrchk(cudaGetLastError());
 	
 	//Copy data to host memory
-	gpuErrchk( cudaMemcpy(newColors, d_newColors, img_width * img_height*sizeof(unsigned char), cudaMemcpyDeviceToHost) );
-	
-	//Make sure that gpu has finished to work
-	cudaDeviceSynchronize();
+	gpuErrchk( cudaMemcpy(image_data, d_newColors, size * sizeof(unsigned char), cudaMemcpyDeviceToHost) );
 	
 	printf("Elapsed time: %lf\n", ((double) (clock() - start)) / CLOCKS_PER_SEC);
 	
@@ -203,22 +202,24 @@ int main() {
     output = fopen(OUTPUT, "wb");
     fwrite(&bmp_head, sizeof(bmp_header), 1, output);
 
-    for(y=0; y<img_height; ++y) {
-        for(x=0; x<img_width; ++x){
-            memset(pixel, newColors[(y*img_width) + x], sizeof(pixel));
-            fwrite(pixel, sizeof(unsigned char) * 3, 1, output);
-        }
-    }
+	for(int c=0; c<size;++c){
+		memset(pixel, image_data[c], sizeof(pixel));
+        fwrite(pixel, sizeof(unsigned char) * 3, 1, output);
+	}
 	   
 	//Free memory
-	cudaFreeHost(image_data);
+	for (int c=0; c<NSTREAMS; ++c) {
+		cudaStreamDestroy(streams[c]);
+	}
+	
 	cudaFree(d_image_data);
-	cudaFree(d_newColors);
 	cudaFree(d_gray);
-	free(newColors);
-	   
+	cudaFree(d_newColors);
+	free(image_data);
+	
     fclose(img);
     fclose(output);
+	cudaDeviceReset();
 	
 	return 0;
 }
