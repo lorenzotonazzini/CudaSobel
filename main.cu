@@ -169,18 +169,14 @@ int main() {
 	  cuda_gray<<<(streamSize/THREAD_IN_BLOCK_GRAY) + 1, THREAD_IN_BLOCK_GRAY, 0, streams[i]>>>(d_image_data, offset, streamSize, d_gray, size);
 	}
 	
-	//Set block size
-	dim3 block(bmp_head.width/(THREAD_IN_BLOCK*MASK) +1 , bmp_head.height/(THREAD_IN_BLOCK*MASK) + 1);
-	
 	//Set grid size
-	dim3 grid(THREAD_IN_BLOCK, THREAD_IN_BLOCK);
+	dim3 grid(bmp_head.width/(THREAD_IN_BLOCK*MASK) +1 , bmp_head.height/(THREAD_IN_BLOCK*MASK) + 1);
 	
-	for (int c=0; c<NSTREAMS; ++c) {
-		cudaStreamSynchronize(streams[c]);
-	}
+	//Set block size
+	dim3 block(THREAD_IN_BLOCK, THREAD_IN_BLOCK);
 	
 	//Launch kernel for sobel filter
-    cuda_sobel<<<block, grid>>>(d_gray, d_newColors, bmp_head.height, bmp_head.width);
+    cuda_sobel<<<grid, block>>>(d_gray, d_newColors, bmp_head.height, bmp_head.width);
 	
 	//Check for occurred error
 	gpuErrchk(cudaGetLastError());
